@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="theme-color" content="#0b1020" />
+<title>LACOPQ Audio FFT Lab</title>
+<style>
+:root{color-scheme:dark;--bg:#080c18;--card:#10182b;--line:#27324a;--txt:#eef3ff;--mut:#aebbd5;--accent:#7dd3fc}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:15px system-ui,-apple-system,Segoe UI,Roboto,sans-serif}header{padding:18px 16px 10px;max-width:1100px;margin:auto}h1{font-size:1.45rem;margin:0 0 4px}p{color:var(--mut);margin:4px 0}.wrap{max-width:1100px;margin:auto;padding:8px 12px 30px}.panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin:10px 0}.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:9px}.ctrl label{display:block;color:var(--mut);font-size:.78rem;margin-bottom:4px}button,select,input{width:100%;min-height:42px;border-radius:9px;border:1px solid #35425f;background:#0b1325;color:var(--txt);padding:8px}button{font-weight:700;cursor:pointer}button.primary{background:#153653;border-color:#2f7aa6}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:8px}.stat{background:#0b1325;border:1px solid var(--line);border-radius:10px;padding:9px}.stat b{display:block;font-size:1.05rem;margin-top:2px}.stat span{color:var(--mut);font-size:.74rem}canvas{display:block;width:100%;height:220px;background:#050914;border:1px solid var(--line);border-radius:10px}.spec{height:330px}.title{font-weight:700;margin:0 0 8px}.status{padding:8px 10px;border-radius:9px;background:#0b1325;color:var(--mut);margin-top:9px}.diag{margin-top:9px;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px}.diag div{background:#0b1325;border:1px solid var(--line);border-radius:8px;padding:7px;font-size:.78rem}.ok{color:#86efac}.bad{color:#fca5a5}.warn{color:#fde68a}.small{font-size:.8rem;color:var(--mut)}@media(max-width:600px){canvas{height:180px}.spec{height:290px}.wrap{padding:5px 8px 25px}}
+</style>
+</head>
+<body>
+<header><h1>LACOPQ Audio FFT Lab <span style="font-size:.45em;opacity:.7">v1.1</span></h1><p>Microfone • forma de onda • FFT • espectrograma em tempo real</p></header>
+<div class="wrap">
+<section class="panel">
+<div class="controls">
+<div class="ctrl"><label>FFT</label><select id="fft"><option>256</option><option>512</option><option>1024</option><option selected>2048</option><option>4096</option><option>8192</option></select></div>
+<div class="ctrl"><label>Janela de exibição</label><select id="smooth"><option value="0">Instantânea</option><option value="0.5" selected>Suavização média</option><option value="0.8">Suavização alta</option></select></div>
+<div class="ctrl"><label>Frequência máxima</label><select id="fmax"><option value="0">Nyquist</option><option value="1000">1 kHz</option><option value="5000" selected>5 kHz</option><option value="10000">10 kHz</option><option value="20000">20 kHz</option></select></div>
+<div class="ctrl"><label>Ação</label><button class="primary" id="start">Iniciar microfone</button></div>
+<div class="ctrl"><label>Espectrograma</label><button id="clear">Limpar</button></div>
+<div class="ctrl"><label>Dados</label><button id="csv">Exportar FFT CSV</button></div>
+</div><div id="status" class="status">Aguardando diagnóstico do navegador.</div><div class="diag"><div>Contexto seguro: <b id="dsecure">—</b></div><div>getUserMedia: <b id="dgum">—</b></div><div>Permissão: <b id="dperm">—</b></div><div>Protocolo: <b id="dproto">—</b></div></div>
+</section>
+<section class="panel"><div class="stats">
+<div class="stat"><span>Taxa de amostragem</span><b id="fs">—</b></div><div class="stat"><span>Δf = fs/N</span><b id="df">—</b></div><div class="stat"><span>Nyquist</span><b id="nyq">—</b></div><div class="stat"><span>Pico dominante</span><b id="peak">—</b></div><div class="stat"><span>Nível RMS relativo</span><b id="rms">—</b></div><div class="stat"><span>FFT</span><b id="nstat">2048</b></div>
+</div></section>
+<section class="panel"><div class="title">Forma de onda x(t)</div><canvas id="wave"></canvas></section>
+<section class="panel"><div class="title">Espectro de magnitude FFT</div><canvas id="spectrum"></canvas><div class="small">Eixo horizontal: frequência (Hz). Eixo vertical: nível relativo (dBFS).</div></section>
+<section class="panel"><div class="title">Espectrograma</div><canvas id="spectrogram" class="spec"></canvas><div class="small">Tempo avança da esquerda para a direita; frequência cresce de baixo para cima.</div></section>
+<section class="panel small"><b>Observação experimental.</b> A análise usa a Web Audio API. O aplicativo solicita desativação de cancelamento de eco, supressão de ruído e ganho automático, mas o dispositivo pode não obedecer integralmente. Para acesso ao microfone, use HTTPS (por exemplo, GitHub Pages) ou localhost.</section>
+</div>
+<script>
+'use strict';
+const $=id=>document.getElementById(id); let ctx,analyser,stream,raf,lastFFT=null,running=false;
+const wave=$('wave'), spectrum=$('spectrum'), gram=$('spectrogram');
+function resize(c){const d=devicePixelRatio||1,w=c.clientWidth,h=c.clientHeight;if(c.width!==Math.round(w*d)||c.height!==Math.round(h*d)){c.width=Math.round(w*d);c.height=Math.round(h*d);const x=c.getContext('2d');x.setTransform(d,0,0,d,0,0);return true}return false}
+function grid(g,w,h,xlab){g.clearRect(0,0,w,h);g.strokeStyle='#263149';g.lineWidth=1;for(let i=0;i<=4;i++){let y=i*h/4;g.beginPath();g.moveTo(0,y);g.lineTo(w,y);g.stroke()}for(let i=0;i<=5;i++){let x=i*w/5;g.beginPath();g.moveTo(x,0);g.lineTo(x,h);g.stroke()}g.fillStyle='#aebbd5';g.font='11px system-ui';if(xlab)g.fillText(xlab,w-55,h-7)}
+function color(db){let t=Math.max(0,Math.min(1,(db+100)/90));let r=Math.floor(255*Math.max(0,(t-.45)/.55)), g=Math.floor(255*Math.min(1,t*1.7)), b=Math.floor(255*(1-Math.max(0,(t-.15)/.85)));return `rgb(${r},${g},${b})`}
+function mark(id,text,cls){let e=$(id);e.textContent=text;e.className=cls||''}
+function webOriginOK(){return location.protocol==='https:' || (location.protocol==='http:' && (location.hostname==='localhost'||location.hostname==='127.0.0.1'));}
+function setStartEnabled(ok){$('start').disabled=!ok;$('start').style.opacity=ok?'1':'.48';$('start').style.cursor=ok?'pointer':'not-allowed';}
+async function diagnostics(){
+  const proto=location.protocol;
+  const secure=window.isSecureContext || location.hostname==='localhost' || location.hostname==='127.0.0.1';
+  const originOK=webOriginOK();
+  mark('dsecure',secure?'SIM':'NÃO',secure?'ok':'bad');
+  mark('dproto',proto,proto==='https:'?'ok':originOK?'ok':'bad');
+  const gum=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia);
+  mark('dgum',gum?'disponível':'indisponível',gum?'ok':'bad');
+  if(navigator.permissions?.query){
+    try{const p=await navigator.permissions.query({name:'microphone'});mark('dperm',p.state,p.state==='granted'?'ok':p.state==='denied'?'bad':'warn');p.onchange=()=>mark('dperm',p.state,p.state==='granted'?'ok':p.state==='denied'?'bad':'warn')}catch(_){mark('dperm','não consultável','warn')}
+  }else mark('dperm','não consultável','warn');
+  if(proto==='content:'){
+    setStartEnabled(false);
+    $('status').innerHTML='<b>Arquivo aberto pelo visualizador do Android (content://).</b> Este modo não é aceito pelo laboratório para aquisição do microfone. Publique o arquivo em um endereço <b>HTTPS</b> (por exemplo, GitHub Pages) e abra esse endereço no navegador.';
+  }else if(proto==='file:'){
+    setStartEnabled(false);
+    $('status').innerHTML='<b>Arquivo aberto diretamente (file://).</b> O acesso ao microfone foi desativado neste modo. Publique o arquivo em <b>HTTPS</b> e abra a página pelo navegador.';
+  }else if(!originOK){
+    setStartEnabled(false);
+    $('status').innerHTML='<b>Origem incompatível para aquisição.</b> Use uma página <b>HTTPS</b> (ou localhost durante desenvolvimento).';
+  }else if(!secure){
+    setStartEnabled(false);
+    $('status').innerHTML='<b>Contexto não seguro.</b> O microfone exige HTTPS ou localhost.';
+  }else if(!gum){
+    setStartEnabled(false);
+    $('status').innerHTML='<b>API de microfone indisponível.</b> Tente Chrome/Edge/Safari atualizado.';
+  }else{
+    setStartEnabled(true);
+    $('status').textContent='Ambiente web compatível. Toque em “Iniciar microfone” para solicitar a permissão.';
+  }
+}
+function micError(e){
+  let msg='Falha ao acessar o microfone.';
+  if(e.name==='NotAllowedError'||e.name==='PermissionDeniedError') msg='Permissão do microfone negada. No navegador, abra as permissões deste site e defina Microfone = Permitir; no Android, verifique também Configurações > Apps > navegador > Permissões > Microfone. Depois recarregue a página.';
+  else if(e.name==='NotFoundError'||e.name==='DevicesNotFoundError') msg='Nenhum microfone foi encontrado no dispositivo.';
+  else if(e.name==='NotReadableError'||e.name==='TrackStartError') msg='O microfone existe, mas não pôde ser aberto. Outro aplicativo pode estar usando-o ou o sistema bloqueou o acesso.';
+  else if(e.name==='SecurityError') msg='O navegador bloqueou o microfone por segurança. Use HTTPS e confira as permissões do site.';
+  else if(e.name==='AbortError') msg='A abertura do microfone foi interrompida. Tente novamente.';
+  else if(e.name==='OverconstrainedError') msg='O dispositivo não aceitou alguma configuração solicitada para o áudio.';
+  else if(e.message) msg+=' '+e.message;
+  $('status').innerHTML='<b>'+msg+'</b><br><span class="small">Erro técnico: '+(e.name||'desconhecido')+(e.message?' — '+e.message:'')+'</span>';
+  diagnostics();
+}
+async function start(){
+ try{
+  if(running){stop();return}
+  if(!webOriginOK()) throw new DOMException('Abra a aplicação por HTTPS (ou localhost). content:// e file:// não são aceitos para aquisição.','SecurityError');
+  if(!window.isSecureContext && location.hostname!=='localhost' && location.hostname!=='127.0.0.1') throw new DOMException('É necessário HTTPS ou localhost.','SecurityError');
+  if(!navigator.mediaDevices?.getUserMedia) throw new DOMException('getUserMedia não está disponível neste navegador/contexto.','NotSupportedError');
+  $('status').textContent='Solicitando acesso ao microfone…';
+  stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},video:false});
+  ctx=new (window.AudioContext||window.webkitAudioContext)();await ctx.resume();analyser=ctx.createAnalyser();analyser.fftSize=+$('fft').value;analyser.smoothingTimeConstant=+$('smooth').value;analyser.minDecibels=-110;analyser.maxDecibels=-10;ctx.createMediaStreamSource(stream).connect(analyser);running=true;$('start').textContent='Parar';$('status').textContent='Microfone ativo. Análise em tempo real em execução.';updateStats();diagnostics();draw()
+ }catch(e){micError(e)}
+}
+function stop(){running=false;cancelAnimationFrame(raf);if(stream)stream.getTracks().forEach(t=>t.stop());if(ctx)ctx.close();$('start').textContent='Iniciar microfone';$('status').textContent='Microfone parado.'}
+function updateStats(){let n=analyser.fftSize,fs=ctx.sampleRate;$('fs').textContent=fs.toLocaleString('pt-BR')+' Hz';$('df').textContent=(fs/n).toFixed(2)+' Hz';$('nyq').textContent=(fs/2).toLocaleString('pt-BR')+' Hz';$('nstat').textContent=n}
+function draw(){if(!running)return;let N=analyser.fftSize;if(N!==+$('fft').value){analyser.fftSize=+$('fft').value;N=analyser.fftSize;updateStats()}analyser.smoothingTimeConstant=+$('smooth').value;const td=new Float32Array(N), fd=new Float32Array(analyser.frequencyBinCount);analyser.getFloatTimeDomainData(td);analyser.getFloatFrequencyData(fd);lastFFT=fd.slice();drawWave(td);drawSpectrum(fd);drawGram(fd);let sum=0;for(const v of td)sum+=v*v;let rms=Math.sqrt(sum/td.length);$('rms').textContent=(20*Math.log10(Math.max(rms,1e-8))).toFixed(1)+' dBFS';let max=-Infinity,idx=0;for(let i=1;i<fd.length;i++)if(fd[i]>max){max=fd[i];idx=i}$('peak').textContent=(idx*ctx.sampleRate/N).toFixed(1)+' Hz';raf=requestAnimationFrame(draw)}
+function drawWave(a){resize(wave);let g=wave.getContext('2d'),w=wave.clientWidth,h=wave.clientHeight;grid(g,w,h,'tempo');g.strokeStyle='#7dd3fc';g.lineWidth=1.5;g.beginPath();for(let i=0;i<a.length;i++){let x=i*w/(a.length-1),y=h/2-a[i]*h*.45;i?g.lineTo(x,y):g.moveTo(x,y)}g.stroke()}
+function maxFreq(){if(!ctx)return 1;let v=+$('fmax').value;return v?Math.min(v,ctx.sampleRate/2):ctx.sampleRate/2}
+function drawSpectrum(a){resize(spectrum);let g=spectrum.getContext('2d'),w=spectrum.clientWidth,h=spectrum.clientHeight,fm=maxFreq(),bins=Math.min(a.length,Math.ceil(fm/(ctx.sampleRate/analyser.fftSize)));grid(g,w,h,'Hz');g.strokeStyle='#7dd3fc';g.lineWidth=1.4;g.beginPath();for(let i=0;i<bins;i++){let x=i*w/(bins-1),db=Math.max(-110,Math.min(-10,a[i])),y=( -10-db)/100*h;i?g.lineTo(x,y):g.moveTo(x,y)}g.stroke();g.fillStyle='#aebbd5';g.font='11px system-ui';for(let i=0;i<=5;i++)g.fillText(Math.round(fm*i/5),Math.min(w-38,w*i/5+2),h-7)}
+function drawGram(a){let resized=resize(gram),g=gram.getContext('2d'),w=gram.clientWidth,h=gram.clientHeight,d=devicePixelRatio||1;if(resized){g.fillStyle='#050914';g.fillRect(0,0,w,h)}else{g.drawImage(gram,-1*d,0,gram.width,gram.height,0,0,gram.width,gram.height)}let fm=maxFreq(),bins=Math.min(a.length,Math.ceil(fm/(ctx.sampleRate/analyser.fftSize)));for(let py=0;py<h;py++){let frac=1-py/(h-1),i=Math.min(bins-1,Math.floor(frac*(bins-1)));g.fillStyle=color(a[i]);g.fillRect(w-2,py,2,1)}}
+function clearGram(){let g=gram.getContext('2d');resize(gram);g.fillStyle='#050914';g.fillRect(0,0,gram.clientWidth,gram.clientHeight)}
+function exportCSV(){if(!lastFFT||!ctx){$('status').textContent='Inicie o microfone antes de exportar.';return}let df=ctx.sampleRate/analyser.fftSize,rows=['frequencia_Hz,nivel_dBFS'];for(let i=0;i<lastFFT.length;i++)rows.push(`${(i*df).toFixed(6)},${lastFFT[i].toFixed(4)}`);let b=new Blob([rows.join('\n')],{type:'text/csv'}),u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download='lacopq_audio_fft.csv';a.click();URL.revokeObjectURL(u)}
+$('start').onclick=start;$('clear').onclick=clearGram;$('csv').onclick=exportCSV;$('fft').onchange=()=>{if(analyser){analyser.fftSize=+$('fft').value;updateStats();clearGram()}};$('fmax').onchange=clearGram;window.addEventListener('resize',()=>{resize(wave);resize(spectrum);resize(gram)});clearGram();diagnostics();
+</script>
+</body></html>
